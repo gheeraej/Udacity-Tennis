@@ -80,11 +80,10 @@ class Agent():
         dones = dones.unsqueeze(-1)
         
         # ---------------------------- update critic ----------------------------
-        actions_target = [actions_target[i].detach() for i in range(len(actions_target))]
+        actions_target = [actions_target[i] for i in range(len(actions_target))]
         actions_target = torch.cat(actions_target, dim=1).to(device)
         
-        with torch.no_grad():
-            Q_targets_next = self.critic_target(next_states.reshape(next_states.shape[0], -1), actions_target.reshape(next_states.shape[0], -1))
+        Q_targets_next = self.critic_target(next_states.reshape(next_states.shape[0], -1), actions_target.reshape(next_states.shape[0], -1))
         # Compute Q targets for current states (y_i)
         Q_targets = rewards.index_select(1, self.index).squeeze(1) + (gamma * Q_targets_next * (1 - dones.index_select(1, self.index).squeeze(1)))
         # Compute critic loss
@@ -97,7 +96,7 @@ class Agent():
         self.critic_optimizer.step()
 
         # ---------------------------- update actor ---------------------------- #
-        actions_pred = [actions_pred[i] if i==self.index.numpy()[0] else actions.index_select(1, torch.tensor([i]).to(device)).squeeze(1).detach() for i in range(len(actions_pred))]
+        actions_pred = [actions_pred[i] if i==self.index.numpy()[0] else actions.index_select(1, torch.tensor([i]).to(device)).squeeze(1) for i in range(len(actions_pred))]
         actions_pred = torch.cat(actions_pred, dim=1).to(device)
         
         actor_loss = -self.critic_local(states.reshape(states.shape[0], -1), actions_pred.reshape(actions_pred.shape[0], -1)).mean()

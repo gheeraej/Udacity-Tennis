@@ -42,19 +42,20 @@ class MultiAgents():
             
         self.t_step = (self.t_step + 1) % UPDATE_EVERY
         if len(self.memory) > BATCH_SIZE and self.t_step == 0:
-            for i, agent in enumerate(self.ma):
-                experiences = self.memory.sample()
-                states, _, _, _, _ = experiences
-                
-                actions_target = [agent_bis.actor_target(states.index_select(1, torch.tensor([j]).to(device)).squeeze(1)) for j, agent_bis in enumerate(self.ma)]
-                actions_pred = [agent_bis.actor_local(states.index_select(1, torch.tensor([j]).to(device)).squeeze(1)) for j, agent_bis in enumerate(self.ma)]
-                    
-                agent.learn(experiences, GAMMA, actions_target, actions_pred)
-            
-            for agent in self.ma:
-                agent.soft_update(agent.critic_local, agent.critic_target, TAU)
-                agent.soft_update(agent.actor_local, agent.actor_target, TAU)    
-    
+            for _ in range(3):
+                for i, agent in enumerate(self.ma):
+                    experiences = self.memory.sample()
+                    states, _, _, _, _ = experiences
+
+                    actions_target = [agent_bis.actor_target(states.index_select(1, torch.tensor([j]).to(device)).squeeze(1)) for j, agent_bis in enumerate(self.ma)]
+                    actions_pred = [agent_bis.actor_local(states.index_select(1, torch.tensor([j]).to(device)).squeeze(1)) for j, agent_bis in enumerate(self.ma)]
+
+                    agent.learn(experiences, GAMMA, actions_target, actions_pred)
+
+                for agent in self.ma:
+                    agent.soft_update(agent.critic_local, agent.critic_target, TAU)
+                    agent.soft_update(agent.actor_local, agent.actor_target, TAU)    
+
     
     def act(self, states, add_noise=True):
         actions = [np.squeeze(agent.act(np.expand_dims(state, axis=0), add_noise), axis=0) for agent, state in zip(self.ma, states)]
