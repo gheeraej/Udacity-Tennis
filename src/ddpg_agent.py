@@ -9,20 +9,21 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-BUFFER_SIZE = int(1e5)  # replay buffer size
-BATCH_SIZE = 128        # minibatch size
-GAMMA = 0.99            # discount factor
-TAU = 1e-3              # for soft update of target parameters
-LR_ACTOR = 1e-3         # learning rate of the actor 
-LR_CRITIC = 1e-3        # learning rate of the critic
+LR_ACTOR = 1e-4         # learning rate of the actor 
+LR_CRITIC = 1e-4        # learning rate of the critic
 WEIGHT_DECAY = 0        # L2 weight decay
+
+NOISE_DECAY = 0.99
+BEGIN_TRAINING_AT = 500
+NOISE_START = 1.0
+NOISE_END = 0.1
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():
     """Interacts with and learns from the environment."""
     
-    def __init__(self, state_size, action_size, index, random_seed):
+    def __init__(self, state_size, action_size, index, nb_agents, random_seed):
         """Initialize an Agent object.
         
         Params
@@ -37,19 +38,36 @@ class Agent():
         self.seed = random.seed(random_seed)
 
         # Actor Network (w/ Target Network)
-        self.actor_local = Actor(state_size, action_size, random_seed).to(device)
-        self.actor_target = Actor(state_size, action_size, random_seed).to(device)
-        self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
+        self.actor_local = Actor(state_size,
+                                 action_size,
+                                 random_seed).to(device)
+        self.actor_target = Actor(state_size,
+                                  action_size,
+                                  random_seed).to(device)
+        self.actor_optimizer = optim.Adam(self.actor_local.parameters(),
+                                          lr=LR_ACTOR)
 
         # Critic Network (w/ Target Network)
-        self.critic_local = Critic(state_size, action_size, random_seed).to(device)
-        self.critic_target = Critic(state_size, action_size, random_seed).to(device)
-        self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)
+        self.critic_local = Critic(nb_agents*state_size,
+                                   nb_agents*action_size,
+                                   random_seed).to(device)
+        self.critic_target = Critic(nb_agents*state_size,
+                                    nb_agents*action_size,
+                                    random_seed).to(device)
+        self.critic_optimizer = optim.Adam(self.critic_local.parameters(),
+                                           lr=LR_CRITIC,
+                                           weight_decay=WEIGHT_DECAY)
 
+        self.soft_update(self.critic_local, self.critic_target, 1)
+        self.soft_update(self.actor_local, self.actor_target, 1)
+        
         # Noise process
-        self.noise = OUNoise(action_size, random_seed)
+        #self.noise = OUNoise(action_size, random_seed)
+        self.noise = RandomNoise(self.action_size,
+                                 NOISE_START, NOISE_END, NOISE_DECAY,
+                                 BEGIN_TRAINING_AT, random_seed)
     
-    def act(self, state, add_noise=True):
+    def act(self, state, i_episode=0, add_noise=True):
         """Returns actions for given state as per current policy."""
         state = torch.from_numpy(state).float().to(device)
         self.actor_local.eval()
@@ -57,7 +75,7 @@ class Agent():
             action = self.actor_local(state).cpu().data.numpy()
         self.actor_local.train()
         if add_noise:
-            action += self.noise.sample()
+            action += self.noise.sample(i_episode)
         return np.clip(action, -1, 1)
 
     def reset(self):
@@ -80,7 +98,6 @@ class Agent():
         dones = dones.unsqueeze(-1)
         
         # ---------------------------- update critic ----------------------------
-        actions_target = [actions_target[i] for i in range(len(actions_target))]
         actions_target = torch.cat(actions_target, dim=1).to(device)
         
         Q_targets_next = self.critic_target(next_states.reshape(next_states.shape[0], -1), actions_target.reshape(next_states.shape[0], -1))
@@ -89,14 +106,13 @@ class Agent():
         # Compute critic loss
         Q_expected = self.critic_local(states.reshape(states.shape[0], -1), actions.reshape(actions.shape[0], -1))
 
-        critic_loss = F.mse_loss(Q_expected, Q_targets.detach())
+        critic_loss = F.mse_loss(Q_expected, Q_targets)
         # Minimize the loss
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
 
         # ---------------------------- update actor ---------------------------- #
-        actions_pred = [actions_pred[i] if i==self.index.numpy()[0] else actions.index_select(1, torch.tensor([i]).to(device)).squeeze(1) for i in range(len(actions_pred))]
         actions_pred = torch.cat(actions_pred, dim=1).to(device)
         
         actor_loss = -self.critic_local(states.reshape(states.shape[0], -1), actions_pred.reshape(actions_pred.shape[0], -1)).mean()
@@ -116,8 +132,10 @@ class Agent():
             target_model: PyTorch model (weights will be copied to)
             tau (float): interpolation parameter 
         """
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
+        for target_param, local_param in zip(target_model.parameters(),
+                                             local_model.parameters()):
+            target_param.data.copy_(tau*local_param.data +
+                                    (1.0-tau)*target_param.data)
 
 
 class OUNoise:
@@ -142,4 +160,26 @@ class OUNoise:
         dx = self.theta * (self.mu - x) + self.sigma * np.random.standard_normal(self.size)
         self.state = x + dx
         return self.state
+    
+    
+class RandomNoise:
+    """Random noise process."""
+    def __init__(self, size, weight, min_weight, noise_decay,
+                 begin_noise_at, seed):
+        self.size = size
+        self.weight_start = weight
+        self.weight = weight
+        self.min_weight = min_weight
+        self.noise_decay = noise_decay
+        self.begin_noise_at = begin_noise_at
+        self.seed = random.seed(seed)
+
+    def reset(self):
+        self.weight = self.weight_start
+
+    def sample(self, i_episode):
+        pwr = max(0, i_episode - self.begin_noise_at)
+        if pwr > 0:
+            self.weight = max(self.min_weight, self.noise_decay**pwr)
+        return self.weight * 0.5 * np.random.standard_normal(self.size)
 
